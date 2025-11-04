@@ -161,19 +161,18 @@ def _get_diffraction_pattern_size(
 
 
 def convert_data(
-    diffraction_pattern_path: Path,
-    *,
-    probe_path: Path | None,
-    probe_position_path: Path | None,
-    object_path: Path | None,
-    metadata_path: Path | None,
-    diffraction_output: Path,
-    product_output: Path,
-    product_name: str | None,
-    diffraction_reader: DiffractionReaderName,
-    probe_reader: ProbeReaderName | None,
-    probe_position_reader: ProbePositionReaderName | None,
-    object_reader: ObjectReaderName | None,
+    diffraction_pattern_path: Path | None = None,
+    probe_path: Path | None = None,
+    probe_position_path: Path | None = None,
+    object_path: Path | None = None,
+    metadata_path: Path | None = None,
+    diffraction_output: Path | None = None,
+    product_output: Path | None = None,
+    product_name: str | None = None,
+    diffraction_reader: DiffractionReaderName | None = "PtychoShelves",
+    probe_reader: ProbeReaderName | None = "PtychoShelves",
+    probe_position_reader: ProbePositionReaderName | None = "PtychoShelves",
+    object_reader: ObjectReaderName | None = "PtychoShelves",
     diffraction_writer: DiffractionWriterName = "PtychoShelves",
     product_writer: ProductWriterName = "HDF5",
     settings_file: Optional[Path] = None,
@@ -234,31 +233,42 @@ def convert_data(
     FileNotFoundError
         Raised when either the diffraction file or the scan file is missing.
     """
-    if not diffraction_pattern_path.is_file():
+    if diffraction_pattern_path is not None and not diffraction_pattern_path.is_file():
         raise FileNotFoundError(f"Diffraction patterns file not found: {diffraction_pattern_path}")
 
     if probe_position_path is not None and not probe_position_path.exists():
         raise FileNotFoundError(f"Scan file not found: {probe_position_path}")
 
-    diffraction_output.parent.mkdir(parents=True, exist_ok=True)
-    product_output.parent.mkdir(parents=True, exist_ok=True)
+    if diffraction_pattern_path is not None:
+        if diffraction_output is not None:
+            diffraction_output.parent.mkdir(parents=True, exist_ok=True)
+    else:
+        diffraction_output = None
+    if product_output is not None:
+        product_output.parent.mkdir(parents=True, exist_ok=True)
 
-    product_basename = product_name or diffraction_pattern_path.stem
+    if diffraction_pattern_path is not None:
+        product_basename = product_name or diffraction_pattern_path.stem
+    else:
+        product_basename = product_name or "ptychodus"
 
     with ModelCore(settings_file) as model:
-        dp_size = _get_diffraction_pattern_size(diffraction_pattern_path, diffraction_reader)
+        if diffraction_pattern_path is not None:
+            dp_size = _get_diffraction_pattern_size(diffraction_pattern_path, diffraction_reader)
         
-        model.workflow_api.open_patterns(
-            diffraction_pattern_path, 
-            file_type=diffraction_reader,
-            crop_center=CropCenter(position_x_px=dp_size[1] // 2, position_y_px=dp_size[0] // 2),
-            crop_extent=ImageExtent(width_px=dp_size[1], height_px=dp_size[0]),
-        )
-        model.diffraction.diffraction_api.start_assembling_diffraction_patterns()
-        model.diffraction.diffraction_api.finish_assembling_diffraction_patterns(block=True)
+            model.workflow_api.open_patterns(
+                diffraction_pattern_path, 
+                file_type=diffraction_reader,
+                crop_center=CropCenter(position_x_px=dp_size[1] // 2, position_y_px=dp_size[0] // 2),
+                crop_extent=ImageExtent(width_px=dp_size[1], height_px=dp_size[0]),
+            )
+            model.diffraction.diffraction_api.start_assembling_diffraction_patterns()
+            model.diffraction.diffraction_api.finish_assembling_diffraction_patterns(block=True)
 
-        metadata = model.diffraction.dataset.get_metadata()
-        product_kwargs = _metadata_kwargs(metadata)
+            metadata = model.diffraction.dataset.get_metadata()
+            product_kwargs = _metadata_kwargs(metadata)
+        else:
+            product_kwargs = {}
 
         workflow_product = model.workflow_api.create_product(product_basename, **product_kwargs)
 
@@ -271,8 +281,10 @@ def convert_data(
         if object_path is not None:
             workflow_product.open_object(object_path, file_type=object_reader or None)
 
-        model.diffraction.diffraction_api.save_patterns(diffraction_output, diffraction_writer)
-        workflow_product.save_product(product_output, file_type=product_writer)
+        if diffraction_output is not None:
+            model.diffraction.diffraction_api.save_patterns(diffraction_output, diffraction_writer)
+        if product_output is not None:
+            workflow_product.save_product(product_output, file_type=product_writer)
         
         # Supplement pixel size
         if metadata_path is not None:
@@ -333,7 +345,7 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--patterns",
         type=Path,
-        default=".",
+        default=None,
         help=(
             "Path to the diffraction file to read. Provide an explicit path for non-demo datasets."
         ),
@@ -454,9 +466,13 @@ def main(argv: list[str] | None = None) -> int:
             f"--diffraction-writer must be one of {', '.join(sorted(DiffractionWriterChoices))}"
         )
 
-    base_name = args.product_name or args.patterns.stem
-    output_dir = args.output_dir or args.patterns.parent / f"{base_name}_ptychodus"
-    
+    if args.patterns is None:
+        base_name = args.product_name or "ptychodus"
+        output_dir = args.output_dir or Path("outputs")
+    else:
+        base_name = args.product_name or args.patterns.stem
+        output_dir = args.output_dir or args.patterns.parent
+
     (
         proposed_diffraction_output_filename, 
         proposed_product_output_filename
@@ -489,8 +505,10 @@ def main(argv: list[str] | None = None) -> int:
         asserted_pixel_size=args.asserted_pixel_size,
     )
 
-    print(f"Wrote diffraction data to {diffraction_path}")
-    print(f"Wrote parameter file to {product_path}")
+    if diffraction_path is not None:
+        print(f"Wrote diffraction data to {diffraction_path}")
+    if product_path is not None:
+        print(f"Wrote parameter file to {product_path}")
 
     return 0
 
